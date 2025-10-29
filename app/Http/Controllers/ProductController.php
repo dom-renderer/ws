@@ -478,8 +478,173 @@ class ProductController extends Controller
                     return response()->json(['message' => 'Unknown operation'], 422);
                 }
 
-                return redirect()->back();
+                    return redirect()->route('product-management', ['type' => encrypt('variable'), 'step' => encrypt(3), 'id' => encrypt($product->id)])
+                        ->with('success', 'Product details saved');
             case 3:
+                $product = Product::findOrFail($id);
+                if ($request->ajax()) {
+                    $request->validate([
+                        'op' => 'required|string',
+                    ]);
+
+                    if ($request->op === 'unit-list') {
+                        $queryString = trim($request->input('searchQuery', ''));
+                        $page = (int) $request->input('page', 1);
+                        $limit = 10;
+                        $query = \App\Models\Unit::query();
+                        if (!empty($queryString)) {
+                            $query->where(function($q) use ($queryString){
+                                $q->where('title', 'LIKE', "%{$queryString}%")
+                                  ->orWhere('text', 'LIKE', "%{$queryString}%");
+                            });
+                        }
+                        $data = $query->paginate($limit, ['*'], 'page', $page);
+                        $response = $data->map(function ($item) {
+                            return [ 'id' => $item->id, 'text' => $item->title ];
+                        });
+                        return response()->json(['items' => $response->values(), 'pagination' => ['more' => $data->hasMorePages()]]);
+                    }
+
+                    if ($request->op === 'list') {
+                        $variants = \App\Models\ProductVarient::where('product_id', $product->id)->get();
+                        $items = [];
+                        foreach ($variants as $v) {
+                            $base = \App\Models\ProductBaseUnit::where('product_id', $product->id)->where('varient_id', $v->id)->first();
+                            $baseUnit = null;
+                            if ($base) {
+                                $u = \App\Models\Unit::find($base->unit_id);
+                                if ($u) $baseUnit = ['id' => $u->id, 'title' => $u->title];
+                            }
+                            $adds = \App\Models\ProductAdditionalUnit::where('product_id', $product->id)->where('varient_id', $v->id)->orderBy('id')->get();
+                            $additional = [];
+                            foreach ($adds as $a) {
+                                $u = \App\Models\Unit::find($a->unit_id);
+                                $additional[] = [
+                                    'id' => $a->id,
+                                    'unit' => $u ? ['id' => $u->id, 'title' => $u->title] : null,
+                                    'parent_id' => $a->parent_id,
+                                    'is_default' => (bool) $a->is_default_selling_unit,
+                                ];
+                            }
+                            $items[] = [
+                                'id' => $v->id,
+                                'name' => $v->name,
+                                'base_unit' => $baseUnit,
+                                'additional_units' => $additional,
+                            ];
+                        }
+                        return response()->json(['items' => $items]);
+                    }
+
+                    if ($request->op === 'set-base') {
+                        $request->validate([
+                            'varient_id' => 'required|integer|exists:product_varients,id',
+                            'unit_id' => 'required|integer|exists:units,id',
+                        ]);
+                        $variant = \App\Models\ProductVarient::where('product_id', $product->id)->findOrFail($request->varient_id);
+                        \App\Models\ProductBaseUnit::updateOrCreate(
+                            ['product_id' => $product->id, 'varient_id' => $variant->id],
+                            ['unit_id' => (int) $request->unit_id]
+                        );
+                        return response()->json(['success' => true]);
+                    }
+
+                    if ($request->op === 'add-additional') {
+                        $request->validate([
+                            'varient_id' => 'required|integer|exists:product_varients,id',
+                            'unit_id' => 'required|integer|exists:units,id',
+                            'parent_id' => 'nullable|integer|exists:product_additional_units,id',
+                            'is_default' => 'nullable|boolean',
+                        ]);
+                        $variant = \App\Models\ProductVarient::where('product_id', $product->id)->findOrFail($request->varient_id);
+                        DB::beginTransaction();
+                        try {
+                            if ($request->boolean('is_default')) {
+                                \App\Models\ProductAdditionalUnit::where('product_id', $product->id)->where('varient_id', $variant->id)->update(['is_default_selling_unit' => 0]);
+                            }
+                            $add = \App\Models\ProductAdditionalUnit::create([
+                                'product_id' => $product->id,
+                                'varient_id' => $variant->id,
+                                'unit_id' => (int) $request->unit_id,
+                                'parent_id' => $request->input('parent_id'),
+                                'is_default_selling_unit' => $request->boolean('is_default') ? 1 : 0,
+                            ]);
+                            DB::commit();
+                            $unit = \App\Models\Unit::find($add->unit_id);
+                            return response()->json(['id' => $add->id, 'unit' => ['id' => $unit?->id, 'title' => $unit?->title], 'parent_id' => $add->parent_id, 'is_default' => (bool) $add->is_default_selling_unit]);
+                        } catch (\Throwable $th) {
+                            DB::rollBack();
+                            return response()->json(['message' => 'Unable to add unit'], 422);
+                        }
+                    }
+
+                    if ($request->op === 'toggle-default') {
+                        $request->validate([
+                            'id' => 'required|integer|exists:product_additional_units,id',
+                            'value' => 'required|boolean',
+                        ]);
+                        $row = \App\Models\ProductAdditionalUnit::findOrFail($request->id);
+                        if ($request->boolean('value')) {
+                            \App\Models\ProductAdditionalUnit::where('product_id', $row->product_id)->where('varient_id', $row->varient_id)->update(['is_default_selling_unit' => 0]);
+                        }
+                        $row->is_default_selling_unit = $request->boolean('value') ? 1 : 0;
+                        $row->save();
+                        return response()->json(['success' => true]);
+                    }
+
+                    if ($request->op === 'delete-additional') {
+                        $request->validate([
+                            'id' => 'required|integer|exists:product_additional_units,id',
+                        ]);
+                        DB::beginTransaction();
+                        try {
+                            $row = \App\Models\ProductAdditionalUnit::findOrFail($request->id);
+                            \App\Models\ProductAdditionalUnit::where('parent_id', $row->id)->update(['parent_id' => null]);
+                            $row->delete();
+                            DB::commit();
+                            return response()->json(['success' => true]);
+                        } catch (\Throwable $th) {
+                            DB::rollBack();
+                            return response()->json(['message' => 'Unable to delete'], 422);
+                        }
+                    }
+
+                    if ($request->op === 'apply-hierarchy') {
+                        $request->validate([
+                            'source_varient_id' => 'required|integer|exists:product_varients,id',
+                        ]);
+                        $source = \App\Models\ProductVarient::where('product_id', $product->id)->findOrFail($request->source_varient_id);
+                        $base = \App\Models\ProductBaseUnit::where('product_id', $product->id)->where('varient_id', $source->id)->first();
+                        $sourceAdds = \App\Models\ProductAdditionalUnit::where('product_id', $product->id)->where('varient_id', $source->id)->orderBy('id')->get();
+                        $others = \App\Models\ProductVarient::where('product_id', $product->id)->where('id', '!=', $source->id)->get();
+                        foreach ($others as $ov) {
+                            if ($base) {
+                                \App\Models\ProductBaseUnit::updateOrCreate(
+                                    ['product_id' => $product->id, 'varient_id' => $ov->id],
+                                    ['unit_id' => $base->unit_id]
+                                );
+                            }
+                            \App\Models\ProductAdditionalUnit::where('product_id', $product->id)->where('varient_id', $ov->id)->delete();
+                            $map = [];
+                            foreach ($sourceAdds as $a) {
+                                $newParent = $a->parent_id ? ($map[$a->parent_id] ?? null) : null;
+                                $created = \App\Models\ProductAdditionalUnit::create([
+                                    'product_id' => $product->id,
+                                    'varient_id' => $ov->id,
+                                    'unit_id' => $a->unit_id,
+                                    'parent_id' => $newParent,
+                                    'is_default_selling_unit' => $a->is_default_selling_unit,
+                                ]);
+                                $map[$a->id] = $created->id;
+                            }
+                        }
+                        return response()->json(['success' => true]);
+                    }
+
+                    return response()->json(['message' => 'Unknown operation'], 422);
+                }
+
+                return redirect()->back();
 
                 break;
             case 4:

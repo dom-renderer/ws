@@ -13,7 +13,7 @@
         <div class="step-line"></div>
 
         @foreach ($steps as $step)
-            <div class="step-item @if($currentStep == $loop->iteration) active @elseif($loop->iteration != 1 && $currentStep > ($loop->iteration - 1)) completed @else pending @endif">
+            <div class="step-item @if($currentStep == $loop->iteration) active @elseif($loop->iteration >=1 && $currentStep > ($loop->iteration - 1)) completed @else pending @endif">
                 <div class="step-circle"> {{ $loop->iteration }} </div>
                 <div class="step-label"> {{ $step  }} </div>
             </div>
