@@ -304,6 +304,7 @@ class ProductController extends Controller
                             \App\Models\ProductVarient::where('product_id', $product->id)->delete();
 
                             $grouped = [];
+                            
                             foreach ($request->input('attributes') as $attr) {
                                 $title = trim($attr['title']);
                                 $vals = array_values(array_filter(array_map('trim', $attr['values'])));

@@ -44,8 +44,17 @@
     </div>
 @endsection
 
+@php
+$attributes = \App\Models\ProductAttribute::where('product_id', $product->id)
+    ->get()
+    ->groupBy('title')
+    ->map(fn($g) => $g->pluck('value')->toArray());
+@endphp
+
 @push('product-js')
 <script>
+const savedAttributes = @json($attributes ?? []);
+
 $(function(){
     const stepUrl = "{{ route('product-management', ['type' => encrypt('variable'), 'step' => encrypt(2), 'id' => encrypt($product->id)]) }}";
 
@@ -194,6 +203,13 @@ $(function(){
         });
     });
 
+    if (Object.keys(savedAttributes).length) {
+        for (const [title, values] of Object.entries(savedAttributes)) {
+            buildAttribute(title, values);
+        }
+    } else {
+        buildAttribute();
+    }
     updateCount();
     refreshList();
 });
