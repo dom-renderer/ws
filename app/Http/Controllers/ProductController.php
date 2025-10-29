@@ -302,9 +302,9 @@ class ProductController extends Controller
                             \App\Models\ProductAttributeVarient::where('product_id', $product->id)->delete();
                             \App\Models\ProductVarientImage::where('product_id', $product->id)->delete();
                             \App\Models\ProductVarient::where('product_id', $product->id)->delete();
-                            
+
                             $grouped = [];
-                            foreach ($request->attributes as $attr) {
+                            foreach ($request->input('attributes') as $attr) {
                                 $title = trim($attr['title']);
                                 $vals = array_values(array_filter(array_map('trim', $attr['values'])));
                                 if (empty($vals)) continue;

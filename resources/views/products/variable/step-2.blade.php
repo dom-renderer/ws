@@ -21,7 +21,6 @@
                         <table class="table align-middle" id="variantsTable">
                             <thead>
                                 <tr>
-                                    <th style="width:40px"><input type="checkbox" id="selectAllVariants"></th>
                                     <th>Image</th>
                                     <th>Variant Name</th>
                                     <th>SKU</th>
@@ -103,7 +102,6 @@ $(function(){
         $tb.empty();
         items.forEach(function(it){
             const tr = $('<tr data-id="'+it.id+'">\
-                <td><input type="checkbox" class="row-check"></td>\
                 <td>\
                     <div class="ratio ratio-1x1 border rounded position-relative" style="width:42px;">\
                         <img class="w-100 h-100 rounded" style="object-fit:cover" src="'+(it.image || '{{ asset('public/assets/images/image_0.png') }}')+'">\
