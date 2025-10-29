@@ -200,7 +200,6 @@ class ProductController extends Controller
                     return back()->withInput()->with('error', 'Something went wrong');
                 }
             case 2:
-
                 break;
             case 3:
 
@@ -244,7 +243,7 @@ class ProductController extends Controller
                         'long_description' => $request->input('long_description'),
                         'status' => (bool) $request->input('status', false),
                         'tags' => $request->input('tags', []),
-                        'type' => 'simple',
+                        'type' => 'variable',
                         'in_draft' => 0,
                     ]);
 
@@ -276,15 +275,209 @@ class ProductController extends Controller
                     }
 
                     DB::commit();
-                    return redirect()->route('product-management', ['type' => encrypt('simple'), 'step' => encrypt(2), 'id' => encrypt($product->id)])
+                    return redirect()->route('product-management', ['type' => encrypt('variable'), 'step' => encrypt(2), 'id' => encrypt($product->id)])
                         ->with('success', 'Product details saved');
                 } catch (\Exception $e) {
                     DB::rollBack();
                     return back()->withInput()->with('error', 'Something went wrong');
                 }
             case 2:
+                $product = Product::findOrFail($id);
+                if ($request->ajax()) {
+                    $request->validate([
+                        'op' => 'required|string',
+                    ]);
 
-                break;
+                    if ($request->op === 'generate') {
+                        $request->validate([
+                            'attributes' => 'required|array|min:1',
+                            'attributes.*.title' => 'required|string|max:120',
+                            'attributes.*.values' => 'required|array|min:1',
+                            'attributes.*.values.*' => 'required|string|max:120',
+                        ]);
+
+                        DB::beginTransaction();
+                        try {
+                            \App\Models\ProductAttribute::where('product_id', $product->id)->delete();
+                            \App\Models\ProductAttributeVarient::where('product_id', $product->id)->delete();
+                            \App\Models\ProductVarientImage::where('product_id', $product->id)->delete();
+                            \App\Models\ProductVarient::where('product_id', $product->id)->delete();
+                            
+                            $grouped = [];
+                            foreach ($request->attributes as $attr) {
+                                $title = trim($attr['title']);
+                                $vals = array_values(array_filter(array_map('trim', $attr['values'])));
+                                if (empty($vals)) continue;
+                                $ids = [];
+                                foreach ($vals as $val) {
+                                    $a = \App\Models\ProductAttribute::create([
+                                        'product_id' => $product->id,
+                                        'title' => $title,
+                                        'value' => $val,
+                                    ]);
+                                    $ids[] = $a->id;
+                                }
+                                if (!empty($ids)) $grouped[] = $ids;
+                            }
+
+                            if (empty($grouped)) {
+                                DB::commit();
+                                return response()->json(['items' => []]);
+                            }
+
+                            $combinations = [[]];
+                            foreach ($grouped as $group) {
+                                $new = [];
+                                foreach ($combinations as $combo) {
+                                    foreach ($group as $idAttr) {
+                                        $tmp = $combo;
+                                        $tmp[] = $idAttr;
+                                        $new[] = $tmp;
+                                    }
+                                }
+                                $combinations = $new;
+                            }
+
+                            $items = [];
+                            $counter = 1;
+
+                            foreach ($combinations as $set) {
+                                $parts = [];
+                                foreach ($set as $aid) {
+                                    $a = \App\Models\ProductAttribute::find($aid);
+                                    if ($a) $parts[] = $a->value;
+                                }
+                                $name = trim(($product->name ?: 'Product Name'). ' - ' . implode(' / ', $parts));
+                                $skuSuffix = strtoupper(implode('-', array_map(function ($p) { return substr(preg_replace('/[^A-Za-z0-9]/','', $p), 0, 2); }, $parts)));
+                                $sku = sprintf('PRD-%s-%03d', $skuSuffix ?: 'VAR', $counter);
+                                $variant = \App\Models\ProductVarient::create([
+                                    'product_id' => $product->id,
+                                    'name' => $name,
+                                    'sku' => $sku,
+                                    'barcode' => null,
+                                    'status' => 1,
+                                ]);
+                                foreach ($set as $aid) {
+                                    \App\Models\ProductAttributeVarient::create([
+                                        'product_id' => $product->id,
+                                        'attribute_id' => $aid,
+                                        'varient_id' => $variant->id,
+                                    ]);
+                                }
+                                $items[] = [
+                                    'id' => $variant->id,
+                                    'name' => $variant->name,
+                                    'sku' => $variant->sku,
+                                    'barcode' => $variant->barcode,
+                                    'status' => (bool) $variant->status,
+                                    'attributes' => $parts,
+                                    'image' => null,
+                                ];
+                                $counter++;
+                            }
+
+                            DB::commit();
+                            return response()->json(['items' => $items]);
+                        } catch (\Throwable $th) {
+                            DB::rollBack();
+                            return response()->json(['message' => 'Failed to generate variants'], 422);
+                        }
+                    }
+
+                    if ($request->op === 'inline') {
+                        $request->validate([
+                            'id' => 'required|integer|exists:product_varients,id',
+                            'field' => 'required|string|in:name,sku,barcode,status',
+                            'value' => 'nullable',
+                        ]);
+                        $variant = \App\Models\ProductVarient::where('product_id', $product->id)->findOrFail($request->id);
+                        if ($request->field === 'status') {
+                            $variant->status = (int) !!$request->value;
+                        } else {
+                            $variant->{$request->field} = $request->value;
+                        }
+                        $variant->save();
+                        return response()->json(['success' => true]);
+                    }
+
+                    if ($request->op === 'delete') {
+                        $request->validate([
+                            'id' => 'required|integer|exists:product_varients,id',
+                        ]);
+                        DB::beginTransaction();
+                        try {
+                            $variant = \App\Models\ProductVarient::where('product_id', $product->id)->findOrFail($request->id);
+                            \App\Models\ProductAttributeVarient::where('product_id', $product->id)->where('varient_id', $variant->id)->delete();
+                            \App\Models\ProductVarientImage::where('product_id', $product->id)->where('varient_id', $variant->id)->delete();
+                            $variant->delete();
+                            DB::commit();
+                            return response()->json(['success' => true]);
+                        } catch (\Throwable $th) {
+                            DB::rollBack();
+                            return response()->json(['message' => 'Unable to delete variant'], 422);
+                        }
+                    }
+
+                    if ($request->op === 'upload-image') {
+                        $request->validate([
+                            'id' => 'required|integer|exists:product_varients,id',
+                            'file' => 'required|image|mimes:jpg,jpeg,png,webp|max:5120',
+                        ]);
+                        $variant = \App\Models\ProductVarient::where('product_id', $product->id)->findOrFail($request->id);
+                        $path = $request->file('file')->store('products/variants', 'public');
+                        \App\Models\ProductVarientImage::where('product_id', $product->id)->where('varient_id', $variant->id)->where('is_primary',1)->delete();
+                        $img = \App\Models\ProductVarientImage::create([
+                            'product_id' => $product->id,
+                            'varient_id' => $variant->id,
+                            'is_primary' => 1,
+                            'file' => $path,
+                        ]);
+                        return response()->json(['url' => asset('storage/'.$img->file)]);
+                    }
+
+                    if ($request->op === 'generate-barcodes') {
+                        $variants = \App\Models\ProductVarient::where('product_id', $product->id)->get();
+                        $i = 1;
+                        foreach ($variants as $v) {
+                            $v->barcode = sprintf('BC%06d', $product->id * 1000 + $i);
+                            $v->save();
+                            $i++;
+                        }
+                        return response()->json(['success' => true]);
+                    }
+
+                    if ($request->op === 'enable-all') {
+                        \App\Models\ProductVarient::where('product_id', $product->id)->update(['status' => 1]);
+                        return response()->json(['success' => true]);
+                    }
+
+                    if ($request->op === 'list') {
+                        $variants = \App\Models\ProductVarient::where('product_id', $product->id)->get();
+                        $items = [];
+                        foreach ($variants as $v) {
+                            $attrIds = \App\Models\ProductAttributeVarient::where('product_id', $product->id)->where('varient_id', $v->id)->pluck('attribute_id')->toArray();
+                            $parts = [];
+                            if (!empty($attrIds)) {
+                                $parts = \App\Models\ProductAttribute::whereIn('id', $attrIds)->pluck('value')->toArray();
+                            }
+                            $img = \App\Models\ProductVarientImage::where('product_id', $product->id)->where('varient_id', $v->id)->where('is_primary',1)->first();
+                            $items[] = [
+                                'id' => $v->id,
+                                'name' => $v->name,
+                                'sku' => $v->sku,
+                                'barcode' => $v->barcode,
+                                'status' => (bool)$v->status,
+                                'attributes' => $parts,
+                                'image' => $img ? asset('storage/'.$img->file) : null,
+                            ];
+                        }
+                        return response()->json(['items' => $items]);
+                    }
+
+                    return response()->json(['message' => 'Unknown operation'], 422);
+                }
+
+                return redirect()->back();
             case 3:
 
                 break;
@@ -330,7 +523,7 @@ class ProductController extends Controller
                         'long_description' => $request->input('long_description'),
                         'status' => (bool) $request->input('status', false),
                         'tags' => $request->input('tags', []),
-                        'type' => 'simple',
+                        'type' => 'bundled',
                         'in_draft' => 0,
                     ]);
 
@@ -362,7 +555,7 @@ class ProductController extends Controller
                     }
 
                     DB::commit();
-                    return redirect()->route('product-management', ['type' => encrypt('simple'), 'step' => encrypt(2), 'id' => encrypt($product->id)])
+                    return redirect()->route('product-management', ['type' => encrypt('bundled'), 'step' => encrypt(2), 'id' => encrypt($product->id)])
                         ->with('success', 'Product details saved');
                 } catch (\Exception $e) {
                     DB::rollBack();
