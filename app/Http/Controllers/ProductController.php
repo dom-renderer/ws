@@ -559,6 +559,16 @@ class ProductController extends Controller
                         $variant = \App\Models\ProductVarient::where('product_id', $product->id)->findOrFail($request->varient_id);
                         DB::beginTransaction();
                         try {
+                            if (!empty($request->parent_id)) {
+                                $existingChild = \App\Models\ProductAdditionalUnit::where('product_id', $product->id)
+                                    ->where('varient_id', $variant->id)
+                                    ->where('parent_id', $request->parent_id)
+                                    ->first();
+                                if ($existingChild) {
+                                    DB::rollBack();
+                                    return response()->json(['message' => 'Parent already has a child'], 422);
+                                }
+                            }
                             if ($request->boolean('is_default')) {
                                 \App\Models\ProductAdditionalUnit::where('product_id', $product->id)->where('varient_id', $variant->id)->update(['is_default_selling_unit' => 0]);
                             }

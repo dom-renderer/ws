@@ -89,7 +89,7 @@ $(function(){
 
             const $wrap = $card.find('.additional-wrap');
             function addRow(row){
-                const $r = $('<div class="border rounded p-3 mb-2">\
+                const $r = $('<div class="border rounded p-3 mb-2" style="margin-left:0">\
                     <div class="row g-2 align-items-center">\
                         <div class="col-md-4">\
                             <div class="d-flex align-items-center">\
@@ -106,17 +106,55 @@ $(function(){
                         </div>\
                     </div>\
                 </div>');
+                if (row && row.id) { $r.attr('data-row-id', row.id); $r.data('row-id', row.id); }
+                if (row && row.parent_id) { $r.attr('data-desired-parent', row.parent_id); $r.data('desired-parent', row.parent_id); }
 
                 const $uSel = unitSelect($r.find('select.unit-select'));
                 if (row && row.unit) { const op = new Option(row.unit.title, row.unit.id, true, true); $uSel.append(op).trigger('change'); }
                 const $parentSel = $r.find('select.parent-select');
-                $wrap.find('.border').each(function(){ const lbl = $(this).find('select.unit-select option:selected').text(); const id = $(this).data('row-id'); if(id) $parentSel.append(new Option(lbl, id)); });
-                if (row && row.parent_id) { $parentSel.val(row.parent_id); }
+                function populateParents(){
+                    $parentSel.html('<option value="">Per Base Unit</option>');
+                    $wrap.find('.border').each(function(){ const lbl = $(this).find('select.unit-select option:selected').text(); const id = $(this).data('row-id'); if(id && id !== $r.data('row-id')) { $parentSel.append(new Option(lbl, id)); } });
+                    const desired = $r.data('desired-parent'); if (desired) { $parentSel.val(desired); }
+                }
+                populateParents();
+
+                function hasChild(parentId){ let found=false; $wrap.find('.border').each(function(){ if($(this).find('.parent-select').val()==parentId) found=true; }); return found; }
+
+                function indentation(){
+                    let indent = 0; let curParent = $parentSel.val();
+                    while(curParent){ const $p = $wrap.find('.border[data-row-id="'+curParent+'"]'); if(!$p.length) break; indent += 20; curParent = $p.find('.parent-select').val(); }
+                    $r.css('margin-left', indent+'px');
+                }
+
+                function chainLabel(){
+                    const unitName = ($uSel.find('option:selected').text()||'');
+                    let parts = ['1 '+unitName];
+                    let total = 1;
+                    let cursor = $r;
+                    while(true){
+                        const qty = parseFloat(cursor.find('.qty').val()||1);
+                        const parentId = cursor.find('.parent-select').val();
+                        if(parentId){
+                            const $p = $wrap.find('.border[data-row-id="'+parentId+'"]');
+                            const parentUnitName = $p.find('select.unit-select option:selected').text();
+                            parts.push('= '+qty+' '+parentUnitName);
+                            total *= qty;
+                            cursor = $p;
+                        } else {
+                            const baseName = v.base_unit ? v.base_unit.title : '';
+                            parts.push('= '+(total*1)+' '+baseName);
+                            break;
+                        }
+                    }
+                    return parts.join(' ');
+                }
 
                 function updateConv(){
-                    const qty = parseFloat($r.find('.qty').val()||1); const parentText = $parentSel.val() ? 'Per Parent Unit' : 'Per Base Unit';
-                    $r.find('.conv-label').text('1 '+ ($uSel.find('option:selected').text()||'') +' = '+ qty +' '+ ($parentSel.find('option:selected').text()|| (v.base_unit?v.base_unit.title:'')) );
+                    const parentText = $parentSel.val() ? 'Per Parent Unit' : 'Per Base Unit';
+                    $r.find('.conv-label').text(chainLabel());
                     $parentSel.find('option:first').text(parentText);
+                    indentation();
                 }
                 $r.on('keyup change', '.qty, .unit-select, .parent-select', updateConv);
                 updateConv();
@@ -130,15 +168,28 @@ $(function(){
 
                 $uSel.on('select2:select', function(e){
                     if ($r.data('row-id')) return;
-                    const payload = { _token:'{{ csrf_token() }}', op:'add-additional', varient_id: v.id, unit_id: e.params.data.id, parent_id: $parentSel.val() || null, is_default: $r.find('.default-switch').is(':checked')?1:0 };
-                    $.post(stepUrl, payload, function(res){ $r.attr('data-row-id', res.id); $r.data('row-id', res.id); $parentSel.append(new Option(res.unit.title, res.id)); updateConv(); });
+                    const parentId = $parentSel.val() || null;
+                    if (parentId && hasChild(parentId)) { if(window.Swal){ Swal.fire('Only one child allowed','','warning'); } return; }
+                    const payload = { _token:'{{ csrf_token() }}', op:'add-additional', varient_id: v.id, unit_id: e.params.data.id, parent_id: parentId, is_default: $r.find('.default-switch').is(':checked')?1:0 };
+                    $.post(stepUrl, payload, function(res){ $r.attr('data-row-id', res.id); $r.data('row-id', res.id); populateParents(); updateConv(); });
                 });
 
                 $wrap.append($r);
                 return $r;
             }
 
-            (v.additional_units||[]).forEach(row => addRow(row).attr('data-row-id', row.id));
+            (v.additional_units||[]).forEach(row => addRow(row));
+
+            function refreshAll(){
+                $wrap.find('.border').each(function(){
+                    const $r = $(this); const $parentSel = $r.find('.parent-select');
+                    $parentSel.html('<option value="">Per Base Unit</option>');
+                    $wrap.find('.border').each(function(){ const id = $(this).data('row-id'); if (id && id !== $r.data('row-id')) { const lbl = $(this).find('select.unit-select option:selected').text(); $parentSel.append(new Option(lbl, id)); } });
+                    const desired = $r.data('desired-parent'); if (desired) { $parentSel.val(desired); }
+                    $r.find('.qty, .unit-select, .parent-select').trigger('change');
+                });
+            }
+            refreshAll();
 
             $card.on('click', '.add-unit', function(){ addRow(); });
 
